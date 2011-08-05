@@ -1,0 +1,362 @@
+<?php
+// $Id: topsites.install,v 1.4 2010/09/12 03:58:39 alexb Exp $
+
+/**
+ * @file
+ */
+
+/**
+ * Implementation of hook_schema().
+ */
+function topsites_schema() {
+  $schema = array();
+  
+  $schema['topsites_cluster_site'] = array(
+    'description' => t('Cluster keywords pivot table'),
+    'fields' => array(
+      'clusid' => array(
+        'type' => 'int',
+        'not null' => TRUE, 
+        'unsigned' => TRUE,
+        'description' => 'ext Cluster ID.',
+      ),    
+      'sid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'default' => 0,
+        'not null' => TRUE,
+        'description' => 'ext Site ID.',
+      ),
+    ), 
+    'indexes' => array( 
+      'sid' => array('sid'),
+      'clusid' => array('clusid'),
+    ),
+  );
+
+  
+  $schema['topsites_site'] = array(
+    'description' => t('Sites evaluated.'),
+    'fields' => array(
+      'sid' => array(
+        'type' => 'serial',
+        'not null' => TRUE, 
+        'unsigned' => TRUE,
+        'description' => 'Site ID.',
+      ),
+      'site_domain' => array(
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Just the domain name.',
+      ),
+      'site_url' => array(
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Full URL used, including www. (excluding http://).',
+      ),
+      'site_pagerank' => array(
+        'type' => 'int',
+        'unsigned' => FALSE,
+        'default' => -2,
+        'not null' => TRUE,
+        'description' => 'Site pagerank.',
+      ),
+      'alexa' => array(
+        'type' => 'int',
+        'unsigned' => FALSE,
+        'default' => -1,
+        'not null' => TRUE,
+        'description' => 'Site alexa rank.',
+      ),
+      'type' => array(
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => 'unknown',
+        'description' => 'Type of site technology (joomola, drupal, wordpress, blogger, etc.)',
+      ),
+      'site_updated' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'default' => 0,
+        'not null' => TRUE,
+        'description' => 'Timestamp when a alexa and pagerank was last checked.',
+      ), 
+    ),
+    'primary key' => array('site_id'=>'sid'),
+    'indexes' => array( 
+      'site_domain' => array('site_domain'),
+      'site_updated' => array('site_updated'),
+    ),
+  );
+  
+  $schema['topsites_page'] = array(
+    'description' => t('Page information.'),
+    'fields' => array(
+      'pid' => array(
+        'type' => 'serial',
+        'not null' => TRUE, 
+        'unsigned' => TRUE,
+        'description' => 'Page ID.',
+      ),   
+      'sid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'default' => 0,
+        'not null' => TRUE,
+        'description' => 'ext Site ID.',
+      ),
+      'page_url' => array(
+        'type' => 'varchar',
+        'length' => 1000,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Page URL (excluding domain).',
+      ),
+      'pagerank' => array(
+        'type' => 'int',
+        'unsigned' => FALSE,
+        'default' => -2,
+        'not null' => TRUE,
+        'description' => 'Site pagerank.',
+      ),
+      'page_updated' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'default' => 0,
+        'not null' => TRUE,
+        'description' => 'Timestamp when page info was updated.',
+      ), 
+    ),
+    'primary key' => array('page_id'=>'pid'),
+    'indexes' => array(
+      'sid' => array('sid'),
+      'page_url' => array('page_url'),
+      'page_updated' => array('page_updated'),
+    ),
+  );
+
+  $schema['topsites_keyword'] = array(
+    'description' => t('Page information.'),
+    'fields' => array(
+      'kwid' => array(
+        'type' => 'serial',
+        'not null' => TRUE, 
+        'unsigned' => TRUE,
+        'description' => 'Keyword ID.',
+      ),    
+      'kw' => array(
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Keyword phrase (lower case removed punctuation).',
+      ),
+      'monthly_searches' => array(
+        'type' => 'int',
+        'unsigned' => FALSE,
+        'default' => -2,
+        'not null' => TRUE,
+        'description' => 'Site pagerank.',
+      ),
+      'local_searches' => array(
+        'type' => 'int',
+        'unsigned' => FALSE,
+        'default' => -2,
+        'not null' => TRUE,
+        'description' => 'Site pagerank.',
+      ),
+      'competition' => array(
+        'type' => 'float',
+        'unsigned' => FALSE,
+        'default' => 0,
+        'not null' => TRUE,
+        'description' => 'Competition rank.',
+      ),
+      'est_cpc' => array(
+        'type' => 'float',
+        'unsigned' => FALSE,
+        'default' => 0,
+        'not null' => TRUE,
+        'description' => 'Estimated CPC.',
+      ),
+      'kw_updated' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'default' => 0,
+        'not null' => TRUE,
+        'description' => 'Date last updated keyword info.',
+      ), 
+    ),
+    'primary key' => array('kw_id'=>'kwid'),
+    'indexes' => array( 
+      'kw' => array('kw'),
+      'monthly_searches' => array('monthly_searches'),
+      'kw_updated' => array('kw_updated'),
+    ),
+  );
+  
+
+  $schema['topsites_cluster_keyword'] = array(
+    'description' => t('Cluster keywords pivot table'),
+    'fields' => array(
+      'clusid' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+        'description' => 'ext Cluster ID.',
+      ),    
+      'kwid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'default' => 0,
+        'not null' => TRUE,
+        'description' => 'ext Keyword ID.',
+      ),
+    ),
+    'indexes' => array(
+      'clusid' => array('clusid'),
+      'kwid' => array('kwid'),
+    ),
+  );
+
+  $schema['topsites_cluster'] = array(
+    'description' => t('Cluster information.'),
+    'fields' => array(
+      'clusid' => array(
+        'type' => 'serial',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+        'description' => 'SERP ID.',
+      ),
+      'cluster_name' => array(
+        'type' => 'varchar',
+        'length' => 100,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Name of this cluster.',
+      ),  
+      'reference_site' => array(
+        'type' => 'varchar',
+        'length' => 200,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Reference site for this cluster.',
+      ),
+      'reference_google_traffic' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'default' => 0,
+        'not null' => TRUE,
+        'description' => 'Google traffic from Analytics',
+      ),
+      'reference_pageviews' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'default' => 0,
+        'not null' => TRUE,
+        'description' => 'Pageviews from Adsense',
+      ),
+      'reference_ecpm' => array(
+        'type' => 'float',
+        'unsigned' => TRUE,
+        'default' => 39.48,
+        'not null' => TRUE,
+        'description' => 'eCPM from Adsense',
+      ),
+    ),
+    'primary key' => array('cluster_id'=>'clusid'),
+  );
+  
+
+  $schema['topsites_serp'] = array(     
+  'description' => t('Serp set.'),
+    'fields' => array(
+      'srpid' => array(
+        'type' => 'serial',
+        'not null' => TRUE, 
+        'unsigned' => TRUE,
+        'description' => 'SERP ID.',
+      ),
+      'kwid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'default' => 0,
+        'not null' => TRUE,
+        'description' => 'ext Keyword ID.',
+      ),
+      'spider_date' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'default' => 0,
+        'not null' => TRUE,
+        'description' => 'Date serp was spidered.',
+      ),
+    ),
+    'primary key' => array('serp_id'=>'srpid'),
+    'indexes' => array( 
+      'kwid' => array('kwid'),
+      'spider_date' => array('spider_date'),
+    ), 
+  );
+
+  $schema['topsites_serp_page'] = array(
+    'description' => t('SERP url.'),
+    'fields' => array(
+      'srpid' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+        'description' => 'ext SERP ID.',
+      ),   
+      'pid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'default' => 0,
+        'not null' => TRUE,
+        'description' => 'ext Page ID.',
+      ),
+      'position' => array(
+        'type' => 'int',
+        'unsigned' => FALSE,
+        'default' => -2,
+        'not null' => TRUE,
+        'description' => 'SERP Position.',
+      ),  
+      'est_traffic' => array(
+        'type' => 'int',
+        'unsigned' => FALSE,
+        'default' => -1,
+        'not null' => TRUE,
+        'description' => 'Est Traffic for this serp/position.',
+      ),
+    ),
+    'indexes' => array( 
+      'srpid' => array('srpid'),
+      'pid' => array('pid'),
+    ), 
+  );
+
+  return $schema;
+}
+
+/**
+ * Implementation of hook_install().
+ */
+function topsites_install() {
+  // Create tables.
+  drupal_install_schema('topsites');
+}
+
+/**
+ * Implementation of hook_uninstall().
+ */
+function topsites_uninstall() {
+  // Remove tables.
+  drupal_uninstall_schema('topsites');
+}
+ 

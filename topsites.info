@@ -1,0 +1,5 @@
+; $Id$
+name = "Topsites Explorer"
+description = "Return a list of top sites for a given keyword cluster."
+core = 6.x
+package = SEO 

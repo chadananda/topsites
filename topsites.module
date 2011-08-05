@@ -1,0 +1,1144 @@
+<?php
+        
+
+
+/**
+ * Implementation of hook_help().
+ */
+function topsites_help($path, $arg) {
+  switch ($path) {
+    case 'admin/help#topsites':
+      return t("Topsites is a tool to evaluate the top sites in a keyword area.");
+  }
+} 
+
+function topsites_menu() {
+  $items = array();
+ 
+
+  // ************** Settings Pages
+  $items['admin/settings/topsites'] = array(
+    'title' => t('Topsites'),
+    'description' => t('Topsites site evaluation from keywords'),
+    'page callback' => 'drupal_get_form',
+     'page arguments' => array('topsites_admin_settings_form', NULL),
+    'access callback' => 'user_access',
+     'access arguments' => array('access content'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  $items['admin/settings/topsites/config'] = array(
+    'title' => t('Settings'),
+    'description' => t('Topsites site evaluation from keywords'),
+    'page callback' => 'drupal_get_form',
+     'page arguments' => array('topsites_admin_settings_form', NULL),
+    'access callback' => 'user_access',
+     'access arguments' => array('access content'),
+    'type'     => MENU_LOCAL_TASK,
+    'weight' => -5,
+  );
+  // cluster editor
+  $items['admin/settings/topsites/clusters'] = array(
+    'title' => t('Keyword Clusters'),
+    'description' => t('Topsites keyword clusters'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' =>  array('topsites_clusterform', NULL),
+    'access arguments' => array('access content'), // relax this?
+    'type'     => MENU_LOCAL_TASK,
+    'weight' => 0,
+  );
+  // keyword info importer
+  $items['admin/settings/topsites/keyword_info'] = array(
+    'title' => t('Keyword Info Importer'),
+    'description' => t('Topsites keyword information inporter'),
+    'page callback' => 'drupal_get_form',
+     'page arguments' => array('topsites_keyword_feederform', NULL),
+    'access arguments' => array('access content'), // relax this?
+    'type'     => MENU_LOCAL_TASK,
+    'weight' => 5,
+  );
+  
+  // admin/reports/topsites/clusters
+  $items['admin/reports/topsites'] = array(
+    'title' => t('Topsites'),
+    'description' => t('Topsites keyword clusters'),
+    'page callback' => 'topsites_cluster_report',
+    'access callback' => 'user_access',
+    'access arguments' => array('access content'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  $items['admin/reports/topsites/clusters'] = array(
+    'title' => t('Clusters'),
+    'description' => t('Topsites keyword clusters'),
+    'page callback' => 'topsites_cluster_report',
+    'access callback' => 'user_access',
+    'access arguments' => array('access content'),
+    'type'     => MENU_LOCAL_TASK,
+  );
+  
+
+
+  return $items;
+}
+
+function topsites_keyword_feederform() {
+  $keywords = topsites_db_rows('SELECT kw FROM {topsites_keyword} WHERE monthly_searches<0 OR kw_updated<%d LIMIT 100', strtotime('90 days ago'));
+  if ($keywords) {
+    foreach ($keywords as $kw) $kws[] = $kw['kw'];
+    $total_keywords = topsites_db_value('SELECT count(*) FROM {topsites_keyword} '.
+      'WHERE monthly_searches<0 OR kw_updated<%d LIMIT 100', strtotime('90 days ago'));
+    $kw_message = 'Keywords '. count($keywords) .' of '. $total_keywords .'.';
+  }
+
+  $form['header'] = array(
+    '#value' => '<h2> Keyword Feeder Tool: Upload CSV files from Google\'s '.
+      l('External Keywords Tool', 'http://bit.ly/9FqW8F', array('attributes'=>array('target'=>'_blank')))
+    .' </h2>',
+  );
+  if (count($keywords)) {
+    $form['topsites_keyword_info']  = array(
+      '#type'         => 'fieldset',
+      '#title'        => t('Topsites Keyword Feeder'),
+      '#description'  => '<h3>Paste these keywords into Google\'s  '.
+         l('External Keywords Tool', 'http://bit.ly/9FqW8F', array('attributes'=>array('target'=>'_blank'))).
+         ' then upload resulting CSV file. <br><b>'. $kw_message .'</b></h3>',
+      '#collapsible' => FALSE,
+      '#collapsed' => FALSE,
+    );
+    $form['topsites_keyword_info']['kw_list'] = array(
+      '#prefix' => '<style> ul.keywords {margin-left:10px; font-size:10px; font-family:courier} </style>',
+      '#value' =>  '<ul class="keywords"><li>'. implode('</li><li>', $kws) .'</ul>',
+    );
+  }
+  $form['topsites_keyword_info']['topsites_csv_upload'] = array(
+     '#type' => 'file', 
+     '#title' => t('Upload CSV File'),
+     '#size' => 90,
+  );
+  $form['#attributes']['enctype'] = 'multipart/form-data';
+
+
+  $form['topsites_search_submit'] = array(
+    '#type'     => 'submit',
+    '#value'    => t('Submit'),
+  );
+  $form['topsites_search_example'] = array(
+    '#value' => '<div style="width:98%; text-align:center; margin-top:20px; padding:20px;background:silver;">
+        <img src="http://bit.ly/hWAbqW" style="padding:1px; border:1px solid gray;" /></div>',
+    '#weight' => 10,
+  );
+  return $form;
+}
+function topsites_keyword_feederform_validate($form, &$form_state){
+  $file = file_save_upload('topsites_csv_upload');
+  if (!file_exists($file->filepath)) form_set_error('topsites_csv_upload', t("CSV file is required")); 
+
+  // checking the data first for all fields then for keyword type "exact"
+  include_once('csv_reader.class.php'); 
+  $slice = array('Keyword','Competition','Global Monthly Searches','Estimated Avg. CPC','Local Monthly Searches');
+  if (!($data = csv_reader::file_to_array($file->filepath, $slice))) {
+    drupal_set_message('No data returned from this CSV file. Are you sure it\'s the right format (Just plain CSV)?', 'warning');
+    return;
+  }
+
+  $row1 = array_shift($data);
+  $csv_keys = array_keys($row1);
+  foreach ($slice as $key) if (!in_array($key, $csv_keys)) {
+    form_set_error('topsites_csv_upload', t("CSV file is missing fields."));
+    return;
+  }
+  $ok = ((substr($row1['Keyword'], 0, 1) == '"') && (substr($row1['Keyword'], 0, 1)));
+  if (!$ok) {
+    form_set_error('topsites_csv_upload', t("CSV Keywords must be 'exact' match. Please re-download CSV file."));
+    return;
+  }
+   else $form_state['values']['topsites_csv_upload'] = $file->filepath;
+}
+function topsites_keyword_feederform_submit($form, &$form_state) {
+  //drupal_set_message("Hi Mom");
+  $csv_file = trim($form_state['values']['topsites_csv_upload']);
+  if (!file_exists($csv_file)) {
+    drupal_set_message("File not found: {$csv_file}", 'warning');
+    return;
+  }
+  include_once('csv_reader.class.php');
+  $slice = array('Keyword','Competition','Global Monthly Searches','Estimated Avg. CPC','Local Monthly Searches');
+  $data = csv_reader::file_to_array($csv_file, $slice);
+  //drupal_set_message("Data returned, example field 1 of ". count($data) ." <pre>". print_r($data[1], TRUE) ." </pre>");
+  // loop through and add or update each keyword
+  if (is_array($data)) foreach ($data as $kw_data) {
+    // add or update record for each keyword
+    $kw = array(
+       'kw' => topsites_clean_keyword($kw_data['Keyword']),
+       'monthly_searches' => (int) $kw_data['Global Monthly Searches'],
+       'local_searches' =>  (int) $kw_data['Local Monthly Searches'],
+       'competition' =>  (float) $kw_data['Competition'],
+       'est_cpc' =>  (float) trim(str_replace('$', '', $kw_data['Estimated Avg. CPC'])),
+       'kw_updated' =>  (int) strtotime('now'),
+    );
+    if ($kwid = topsites_db_value('SELECT kwid FROM {topsites_keyword} WHERE kw="%s"',$kw['kw'])) {
+      $kw['kwid'] = $kwid;
+      drupal_write_record('topsites_keyword', $kw, 'kwid');
+      $updated++;
+    } else {
+      drupal_write_record('topsites_keyword', $kw);
+      $added++;
+    }
+  }
+  drupal_set_message('Added '. (int)$added .' new keywords, updated '. (int)$updated .' keywords.');
+  //drupal_set_message('Picked up data into array: <pre>'.print_r($data, TRUE).'</pre>');
+}
+
+
+function topsites_admin_settings_form() {
+ 
+
+  $form['parse_settings']  = array(
+      '#type'         => 'fieldset',
+      '#title'        => t('Topsites spider and analysis settings'),
+      '#collapsible' => TRUE,
+      '#collapsed' => FALSE,
+  );
+  $form['parse_settings']['topsites_google_request_interval'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Seconds delay between each Google request'),
+      '#description' =>  t('Default 5 seconds. This is to avoid being blacklisted.'),
+      '#required' => FALSE,
+      '#default_value' => variable_get('topsites_google_request_interval', 5),
+  );
+  $form['parse_settings']['topsites_minimum_keyword_traffic'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Minimum monthly traffic to consider a keyword'),
+      '#description' =>  t('Default 1000 -- elimintates only 1% of traffic but 4/5ths of poor keywords.'),
+      '#required' => FALSE,
+      '#default_value' => variable_get('topsites_minimum_keyword_traffic', 1000),
+  );
+  
+
+  // ====================================================================
+
+  $form['keys']  = array(
+      '#type'         => 'fieldset',
+      '#title'        => t('Optional API Keys'),
+      '#collapsible' => TRUE,
+      '#collapsed' => TRUE,
+  );
+  $form['keys']['topsites_google_api_key'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Google API Key'),
+      '#description' =>  t('Google API key, optional.  http://code.google.com/more'),
+      '#required' => FALSE,
+      '#default_value' => variable_get('topsites_google_request_interval', ''),
+  );
+  $form['keys']['topsites_yahoo_api_key'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Yahoo API Key'),
+      '#description' =>  t('Yahoo API key, optional.  http://developer.yahoo.com/everything.html'),
+      '#required' => FALSE,
+      '#default_value' => variable_get('topsites_yahoo_api_key', ''),
+  );
+  $form['keys']['topsites_alexa_api_key'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Yahoo API Key'),
+      '#description' =>  t('Alexa API key, optional.  http://aws.amazon.com/awis/'),
+      '#required' => FALSE,
+      '#default_value' => variable_get('topsites_alexa_api_key', ''),
+  );
+  
+
+
+
+ return system_settings_form($form);
+}
+
+
+
+/*
+** ===========================================================
+** search Form
+*/
+function topsites_clusterform() {
+  if ((arg(4)=='delete') && is_numeric(arg(5))) {
+    drupal_set_message('Delete search id '.arg(5));
+    topsite_delete_search(arg(5)); 
+    drupal_goto('admin/settings/topsites/clusters');
+  } elseif ((arg(4)=='edit') && is_numeric(arg(5))) {
+     $clusid = (int)arg(5);
+     if (!($cluster = topsites_db_row('SELECT * FROM {topsites_cluster} WHERE clusid=%d', $clusid))) 
+       drupal_goto('admin/settings/topsites/clusters');
+  }
+  
+  $need_keywords = topsites_db_value('SELECT count(*) FROM {topsites_keyword} WHERE  monthly_searches<0 OR kw_updated<%d  LIMIT 1', strtotime('90 days ago'));
+  if ($need_keywords) {
+    drupal_set_message('We need some data to be imported from Google\'s external keywords tool. Please go here: '.
+      l('Keyword Information Importer', 'admin/settings/topsites/keyword_info'), 'warning');
+  }
+
+  // we're going to test some code here
+ // require_once('google_tools.class.php');
+ //  drupal_set_message('Suggestions for "free backup software": <pre>'. print_r(google_tools::suggestions('free backup software'), TRUE) .'</pre>');
+  //drupal_set_message('Pagerank for Google.com: '. google_tools::pagerank('notepad.com'));
+ // drupal_set_message('SERPS for "free backup tools": <pre>'. print_r(google_tools::search_results('free backup tools'), TRUE) .'</pre>');
+  //topsites_update_clusters(10);
+
+
+  // display table of other keyword clusters
+  $prev_count = topsites_db_value('SELECT count(*) FROM {topsites_cluster}');
+  if ($prev_count) {
+    $form['topsites_search_header']  = array('#value' => "<h2> Other Tracked Keyword Clusters </h2>");
+    $form['topsites_search_list']  = array('#value'  => topsites_clusterlist());
+  }
+   $form['topsites_clusid']  = array(
+    '#type'         => 'hidden', 
+    '#value'        =>  $clusid,
+  );
+   $form['topsites_search']  = array(
+    '#type'         => 'fieldset',
+    '#title'        => $cluster['cluster_name'] ? "<b><i>". $cluster['cluster_name'] ."</i></b> keyword cluster" : t('New Keyword Cluster'),
+    '#description'  => t('Get keyword list from the site\'s log file and from topic searches such as with Google\'s '.
+       l('External Keywords Tool', 'http://bit.ly/9FqW8F', array('attributes'=>array('target'=>'_blank')))),
+    '#collapsible' => TRUE,
+    '#collapsed' => FALSE,
+  );
+  $form['topsites_search']['topsites_cluster_name'] = array(
+    '#type'     => 'textfield',
+    '#title'    => t('Keyword Cluster Name'),
+    '#default_value' => $cluster['cluster_name'],
+  );
+  if ($clusid && ($kws = topsites_search_keywords($clusid))) {
+    $minimum = variable_get('topsites_minimum_keyword_traffic', 1000);
+    foreach ($kws as $kw) {
+      if ($kw['monthly_searches']>$minimum) $used_keywords[] = $kw['kw'];
+      else if ($kw['monthly_searches']>=0) $unused_keywords[] =  $kw['kw'];
+       else if ($kw['monthly_searches']<0) $unknown_keywords[] =  $kw['kw'];
+    }
+    if (count($used_keywords)) $keywords = "=== Tracked Keywords (traffic above {$minimum}) ==============\n".  implode(", ", $used_keywords);
+    if (count($unused_keywords)) $keywords .= "\n\n=== Unused Keywords (traffic below {$minimum}) ==============\n".  implode(", ", $unused_keywords);
+    if (count($unknown_keywords)) $keywords .= "\n\n=== Unknown Keywords (unknown - no traffic information) =================\n".  implode("\n", $unknown_keywords);
+  }
+  $form['topsites_search']['topsites_search_keywords'] = array(
+    '#type'     => 'textarea',
+    '#title'    => t('Keyword List'),
+    '#descripription'    => t('Keywords list separated by commas or new lines.'),
+    '#default_value' => $keywords,
+    '#suffix' => '<br>',
+  );
+
+  /*  Reference Site
+  ==================================================================
+  */
+  $form['topsites_search']['reference_frame']  = array(
+      '#type'         => 'fieldset',
+      '#title'        => t('Analysis Reference Site'),
+      '#description'  => 'Note: Pageviews must come from Adense in order to estimate accurately!',
+      '#collapsible' => TRUE,
+      '#collapsed' => (boolean)$cluster['clusid'],
+  );
+  $form['topsites_search']['reference_frame']['topsites_reference_site'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Reference Domain'),
+      '#required' => FALSE,
+      '#default_value' => $cluster['reference_site'],
+  );
+  $form['topsites_search']['reference_frame']['topsites_monthly_google_traffic'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Monthly Google Traffic (from Google Analytics)'),
+      '#required' => FALSE,
+      '#default_value' => (int)$cluster['reference_google_traffic'],
+  );
+  $form['topsites_search']['reference_frame']['topsites_monthly_pageviews'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Total Monthly Pageviews (from Adsense)'),
+      '#required' => FALSE,
+      '#default_value' => (int)$cluster['reference_pageviews'],
+  );
+  $form['topsites_search']['reference_frame']['topsites_ecpm'] = array(
+      '#type' => 'textfield',
+      '#title' => t('eCPM (Adsense)'),
+      '#required' => FALSE,
+      '#default_value' => (float)$cluster['reference_ecpm'],
+  );
+  $form['topsites_search_submit'] = array(
+    '#type'     => 'submit',
+    '#value'    => t('Submit'),
+  );
+  // add or edit search form
+  return $form;
+}
+function topsites_clusterform_validate($form, &$form_state) {
+  if (empty($form_state['values']['topsites_cluster_name'])) form_set_error('topsites_cluster_name',
+    'Each search must have a name.');
+  $keywords = topsites_clean_keywords($form_state['values']['topsites_search_keywords']);
+  if (count($keywords)==0) form_set_error('topsites_search_keywords', 'No acceptable keywords (after cleanup).');
+}
+function topsites_clusterform_submit($form, &$form_state) {
+   $values = $form_state['values'];
+   $kws = topsites_clean_keywords($values['topsites_search_keywords']);
+   $cluster = array (
+    'cluster_name' =>          $values['topsites_cluster_name'],
+    'reference_site' =>        topsites_extract_clean_domain($values['topsites_reference_site']),
+    'reference_google_traffic' =>  (int) $values['topsites_monthly_google_traffic'],
+    'reference_pageviews' =>   (int) $values['topsites_monthly_pageviews'],
+    'reference_ecpm' =>        (float) $values['topsites_ecpm'],
+   );
+   if ($values['topsites_clusid']) $cluster['clusid'] = (int)$values['topsites_clusid'];
+   //drupal_set_message('Search: '. $values['topsites_cluster_name'] .'<pre>'.print_r($cluster, TRUE) .'</pre>');
+   topsites_update_cluster($cluster, $kws); 
+}
+// ===========================================================
+
+function topsites_extract_clean_domain($url) {
+  // TODO: return  just lowercased clean domain
+  return $url;
+}
+
+function topsites_clusterlist($isform=TRUE) {
+  // format table here
+  $head = array(
+		array('data' => t('Keyword Cluster'), 'field' => 'cluster_name'),
+		//array('data' => t('ID'), 'field' => 'clusid'),
+		array('data' => t('Keywords'), 'field' => 'keywords'),
+		array('data' => t('Tracked Keywords'), 'field' => 'keywords_tracked'),
+		array('data' => t('Tracked Keyword Monthly Traffic'), 'field' => 'keyword_traffic', 'sort' => 'desc'),
+    array('data' => t('Spidered Keywords'), 'field' => 'keyword_spidered'),
+  );
+  if ($isform) {
+    $head[] = array('data' => 'edit', 'field' => 'edit');
+    $head[] = array('data' => 'delete', 'field' => 'delete');
+  }
+
+  // view details of a search with [more][edit][delete]
+  $clusters = topsites_db_rows('SELECT * FROM {topsites_cluster}');
+  if (is_array($clusters)) foreach($clusters as $cluster) {
+    $keyword_traffic_min = variable_get('topsites_minimum_keyword_traffic', 1000);
+    $spidered_keywords = topsites_db_value('SELECT COUNT(kw.kwid) FROM {topsites_cluster_keyword} pivot, {topsites_keyword} kw
+      WHERE pivot.kwid = kw.kwid
+       AND pivot.clusid=%d
+       AND kw.kwid IN (SELECT kwid FROM {topsites_serp} WHERE spider_date>%d)
+       AND kw.monthly_searches>%d
+       ', $cluster['clusid'], strtotime('30 days ago'), variable_get('topsites_minimum_keyword_traffic', 1000));
+    $tracked_keywords = topsites_db_value('SELECT count(kw.kwid) FROM {topsites_cluster_keyword} pivot, {topsites_keyword} kw
+      WHERE pivot.kwid=kw.kwid AND monthly_searches>%d AND pivot.clusid=%d',$keyword_traffic_min,  $cluster['clusid']);
+    $untracked_keywords = topsites_db_value('SELECT count(kw.kwid) FROM {topsites_cluster_keyword} pivot, {topsites_keyword} kw
+      WHERE pivot.kwid=kw.kwid AND monthly_searches>=0 AND monthly_searches<=%d AND pivot.clusid=%d', $keyword_traffic_min,  $cluster['clusid']);
+    $unknown_keywords = topsites_db_value('SELECT count(kw.kwid) FROM {topsites_cluster_keyword} pivot, {topsites_keyword} kw
+      WHERE pivot.kwid=kw.kwid AND monthly_searches<0 AND pivot.clusid=%d', $keyword_traffic_min,  $cluster['clusid']);
+    $keyword_traffic = topsites_db_value('SELECT sum(monthly_searches) FROM {topsites_keyword}
+         WHERE monthly_searches>%d AND kwid IN (SELECT kwid FROM {topsites_cluster_keyword} where clusid=%d)', $keyword_traffic_min, $cluster['clusid']);
+    $row = array(
+      'cluster_name' => l($cluster['cluster_name'], 'admin/reports/topsites/clusters/'. $cluster['clusid']),
+      'keywords' => number_format($tracked_keywords + $untracked_keywords +$unknown_keywords),
+      'keywords_tracked' => number_format($tracked_keywords),
+      // others?
+      'keyword_traffic' => number_format($keyword_traffic),
+      'keyword_spidered' => number_format($spidered_keywords),
+      // 'edit' => l('[edit]', 'admin/settings/topsites/clusters/edit/'. $cluster['clusid']),
+      // 'delete' => l('[delete]', 'admin/settings/topsites/clusters/delete/'. $cluster['clusid']),
+    );
+    if ($isform) {
+      $row['edit'] = l('[edit]', 'admin/settings/topsites/clusters/edit/'. $cluster['clusid']);
+      $row['delete'] = l('[delete]', 'admin/settings/topsites/clusters/delete/'. $cluster['clusid']);
+    }
+    $rows[] = $row;
+  }
+  // sortable table
+  $table = theme_table($head, $rows);
+  return $table;
+}
+
+function topsites_cluster_report(){ // not a form, path is admin/reports/topsites/clusters
+  $content = '<h2>'. t('Tracked Keyword Clusters') .'</h2>';
+  $content .=  topsites_clusterlist(FALSE);
+  if (!($clusid = (int) arg(4))) return $content;
+  $content .= topsites_cluster_details($clusid);
+  return $content;
+}
+
+function topsites_cluster_details($clusid){
+  if (!($clusid = (int)$clusid)) return;
+  if (!($cluster = topsites_db_row('SELECT * FROM {topsites_cluster} WHERE clusid=%d', $clusid))) return;
+
+  $sites = topsites_sites_in_cluster($clusid, '');
+  if (count($sites)) foreach ($sites as $site) $unique_sites[$site['site_url']] = 1;
+  $unique_sites_count = count($unique_sites);
+
+  $pages = topsites_pages_in_cluster($clusid, '');
+  if (count($pages)) foreach ($pages as $page) $unique_pages[$page['page_url']] = 1;
+  $unique_pages_count = count($unique_pages);
+
+
+ // $url = 'http://www.transformology.com';
+  //drupal_set_message('Site: '.$url.' is type: '. topsites_site_type($url));
+  
+  //topsites_update_type(10);
+  //return;
+
+  /*
+  * Fields:
+   Domain, #pages, #keywords, #positions, Est Traffic, Est Pageviews (ratio based on reference), Est Earnings (based on which keywords)
+   Later: PR, Alexa, Age, Type, HasAdsense
+  */
+
+
+  /*
+  $total = 10000000;
+  for ($i=1; $i<100; $i++){
+    $traffic = topsites_est_serp_traffic($i, $total);
+    $new_total += $traffic;
+    //drupal_set_message("$total traffic total, position {$i}: $traffic");
+  }
+  drupal_set_message("Total {$total} minus new_total: {$new_total} = ". number_format($total-$new_total));
+  */
+
+  $hits = topsites_db_rows('SELECT sid, page_url, page.pid, serp.srpid, est_traffic, position, serps.kwid, kw.kw
+    FROM topsites_serp_page serp
+     LEFT OUTER JOIN topsites_page page ON page.pid=serp.pid 
+      LEFT OUTER JOIN topsites_serp serps ON serp.srpid=serps.srpid
+       LEFT OUTER JOIN topsites_keyword kw ON serps.kwid=kw.kwid
+     WHERE serp.srpid IN (
+        SELECT srpid FROM topsites_serp WHERE spider_date>%d AND kwid IN (
+          SELECT kwid FROM topsites_cluster_keyword WHERE clusid = %d
+        )
+      )', strtotime('30 days ago'), $clusid);
+
+
+  foreach ($hits as $hit) {
+    $total = $totals[$hit['sid']];
+     // per keyword: keyword, url/domain/did, position, est traffic, est pageviews, est revenue, est value
+     $total['unique_keywords'][$hit['kw']]=1;
+     $kw_pg = $hit['kw'] .', '. (number_format($hit['position']/10)+1);
+     $total['keywords_pages'][$kw_pg] += $hit['est_traffic'];
+     $total['unique_pages'][$hit['pid']]=1;
+     $total['unique_positions']++;
+     $total['est_traffic'] += $hit['est_traffic'];
+     $total['positions'][] = $hit['position']; 
+
+    $totals[$hit['sid']] = $total;
+  }
+  
+  $domain =  topsites_extract_domain($cluster['reference_site']);
+  $sid = topsites_db_value('SELECT sid FROM {topsites_site} WHERE site_domain="%s"', $domain);
+  //drupal_set_message($domain .' '.$sid);
+  $est_traffic_ratio = $cluster['reference_google_traffic'] / $totals[21]['est_traffic'];
+  //$est_traffic_pageviews_ratio =
+  $traffic_to_pageviews_ratio = $cluster['reference_pageviews'] / $cluster['reference_google_traffic']; // *  $est_traffic
+
+  foreach ($totals as $sid=>$total) {
+    if (is_array($total['keywords_pages'])) {
+      arsort($total['keywords_pages']);
+      $total['keywords_pages'] = array_keys($total['keywords_pages']);
+      $total['keywords_pages'] = array_slice($total['keywords_pages'], 0, 3);
+    }
+    $total['unique_keywords'] = count($total['unique_keywords']);
+
+    $total['unique_pages'] = count($total['unique_pages']);
+    $total['est_traffic'] = $total['est_traffic'] * $est_traffic_ratio;
+    $total['est_pageviews'] = $total['est_traffic'] * $traffic_to_pageviews_ratio;
+    $total['est_revenue'] = $total['est_pageviews']* $cluster['reference_ecpm'] / 1000;
+    $total['est_value'] = $total['est_revenue'] * 6;
+
+    // summary of positions and pages     
+    $pos_sums = ''; $page_sums = ''; $positions = '';
+    sort($total['positions'], SORT_NUMERIC);
+    $positions = $total['positions'];
+    $total['top_position'] = array_shift($total['positions']);
+    $total['top_page'] = (int)($total['top_position']/10)+1;
+    //  drupal_set_message("<pre>".print_r($positions, true)."</pre>");
+    foreach ($positions as $position) {
+       $pos_sums[$position]++;
+       $page_sums[number_format($position/10)+1]++;
+    }
+    foreach ($pos_sums as $pos=>$count) $pos_sums[$pos] = "{$pos}({$count})";
+   // foreach ($total['top_keywords'] as $kw=>$traffic) = $total['keywords'][] = $kw."({$traffic})";
+    //$total['top_position'] =
+    $total['positions'] = array_values($pos_sums);
+    foreach ($page_sums as $page=>$count) $page_sums[$page] = "{$page}({$count})";
+    $total['pages'] = array_values($page_sums);
+    $pos_sums = '';  $page_sums = '';
+
+    $totals[$sid] = $total;
+  }
+  // gather up ordered Totals
+  if (count($sites)) foreach($sites as $i=>$site) $sites[$i]['totals'] = $totals[$site['sid']];
+
+  // sort sites, and display the top couple hundred
+  //$sites = array_reverse(topsites_report_sort_field($sites, $field='est_value'));
+  usort($sites, 'topsites_report_sort_estvalue');
+
+  // options:
+   // only show items with top position in page > 2
+  if (count($sites)) foreach($sites as $i=>$site) if ($site['site_domain']!=$cluster['reference_site']) {
+    if (($site['totals']['top_page']>2) || ($site['totals']['top_page']>6)) unset($sites[$i]);
+    else if (($site['site_pagerank']<1) || ($site['site_pagerank']>7)) unset($sites[$i]);
+    else if (in_array(substr($site['site_domain'], -4, 4), array('.gov'))) unset($sites[$i]);
+    else if ($site['totals']['est_pageviews']<10) unset($sites[$i]);
+   // else if (!in_array($site['type'], array('drupal', 'wordpress', 'blogger'))) unset($sites[$i]);
+  }
+  $message = "-- only showing sites with top hit on page 1 or 2 and pagerank from 1-7";
+
+  $sites = array_slice(array_reverse($sites), 0, 500);
+  
+  // optional
+
+  // now format rows
+  if (count($sites)) foreach($sites as $site) {
+    $total = $site['totals'];
+    //$keywords = array_slice($total['keywords_pages'], 0, 10);
+    $keywords = "<div class='kwlist'><ul><li>". implode('</li><li>', $total['keywords_pages']) ."</li></ul></div>";
+    $keyword_count = $total['unique_keywords'];
+    $page_count = $total['unique_pages'];
+    $page_count = $total['unique_pages'];
+    $position_count = $total['unique_positions'];
+    $est_traffic = $total['est_traffic'];
+    $est_pageviews = $total['est_pageviews'];
+    $est_revenue =  $total['est_revenue'];
+    $est_value =  $total['est_value'];
+    $positions = implode(',', array_slice($total['positions'], 0, 4));
+    $pages = implode(',', array_slice($total['pages'], 0, 4));
+
+
+  // if ($position_count>5){drupal_set_message("<pre>".print_r($total['pages'], true).print_r($total['positions'], true)."</pre>");  return;}
+
+    $rows[] = array(
+      'site_domain' => l($site['site_domain'], 'http://'.$site['site_domain'], array('attributes'=>array('target'=>'_blank'))),
+      'type' => $site['type'],
+      'pagerank' => number_format($site['site_pagerank']),
+      'position_count' => number_format($position_count),
+      'top_positions' => $positions,
+      'page_count' => number_format($page_count),
+      'top_pages' => $pages,
+      'keyword_count' => number_format($keyword_count),
+      'keywords' => $keywords,
+      'est_traffic' => number_format($est_traffic),
+      'est_pageviews' => number_format($est_pageviews),
+      'est_revenue' => '$'. number_format($est_revenue, 2),
+      'est_value' =>   '$'. number_format($est_value, 2),
+    );
+    //if (count($rows)>1000) break;
+  }
+
+  $head = array(
+		array('data' => t('Website'), 'field' => 'site_domain'),
+    array('data' => t('CMS'), 'field' => 'type'),
+   	array('data' => t('PR'), 'field' => 'pagerank'),
+		array('data' => t('# Positions'), 'field' => 'position_count', 'sort' => 'desc'),
+    array('data' => t('Top Positions'), 'field' => 'top_positions'),
+		array('data' => t('# Pages'), 'field' => 'page_count'),
+		array('data' => t('Top Pages'), 'field' => 'top_pages'), 
+		array('data' => t('# Keywords'), 'field' => 'keyword_count'),
+    array('data' => t('Top Keywords & hit page'), 'field' => 'keywords'), // first half-dozen keywords
+    array('data' => t('Est. Traffic'), 'field' => 'est_traffic'), // based on a each serp position and keyword traffic
+    array('data' => t('Est. Pageviews'), 'field' => 'est_pageviews'), // based on est traffic and reference multiplier
+    array('data' => t('Est. Revenue'), 'field' => 'est_revenue'), // based on est traffic and reference ePC (later we'll ratio by keyword CPC)
+    array('data' => t('Est. Value'), 'field' => 'est_value'), // based on 6-10 months revenue projections
+  );
+
+  // header with sortable table
+  $content = '<h2> Details of Cluster "'. $cluster['cluster_name'] .'" '.
+     "(".number_format($unique_sites_count) ." sites, ". number_format($unique_pages_count) ." pages) {$message}</h2>";
+  $content .= theme_table($head, $rows);
+  return $content;
+}
+
+// sort rows usort($data, topsites_report_sort_field('field'));;
+function topsites_report_sort_field($rows, $field='est_traffic') {
+// $code = "return strnatcmp(\$a['$field'], \$b['$field']);";
+  $code = "if (\$a['$field'] == \$b['$field']) return 0; else return (\$a['$field'] < \$b['$field']) ? -1 : 1;";
+  usort($rows, create_function('$a,$b', $code)); 
+  return $rows;
+}
+
+function topsites_report_sort_estvalue($a,$b) {
+  $a = (float) $a['totals']['est_value']; $b = (float) $b['totals']['est_value'];
+  if ($a == $b) return 0; else return ($a < $b) ? -1 : 1;
+}
+
+function topsites_sort_top_keywords($a,$b) {
+ // $a = $a['totals']['est_value']; $b =  $b['totals']['est_value'];
+ // if ($a == $b) return 0; else return ($a < $b) ? -1 : 1;
+}
+
+function topsites_order_report($rows, $field='est_traffic') {
+
+}
+
+
+function topsites_cluster_keywords($clusid) {
+  
+}
+function topsites_est_serp_traffic($position, $total_traffic){
+  // formulae should basically match the serp click distributions
+  $dist=array(42.3,11.92,8.44,6.03,4.86,3.99,3.37,2.98,2.83,2.97,0.66,0.66,0.52,0.48,0.47,0.39,0.36,0.34,0.32,0.30,0.29,
+   0.27,0.24,0.22,0.20,0.18,0.16,0.14,0.12,0.12,0.12,0.12,0.12,0.11,0.11,0.10,0.10,0.09,0.09,0.08,0.08,0.07);
+  if ($position < count($dist)) return round($dist[$position-1] * $total_traffic / 100);
+  $used = array_sum($dist);
+  for ($i = 41; $i<100; $i++) {
+    $remaining_allotment = (float) 100.0000 - $used;
+    $remaining_steps = 100 - $i;
+    $multiplier = round($remaining_allotment / $remaining_steps  * 1.5, 4);
+    $used += $multiplier;
+    if (($i>=$position) || ($used > 100)) {
+     //drupal_set_message("{$i} remaining_steps: $remaining_steps, remaining_allotment: ". (float) $remaining_allotment);
+     $result = round($multiplier * $total_traffic / 100);
+     return $result;
+    }
+  }
+}
+
+
+
+
+
+function topsites_search_summary($clusid) {
+  $item['cluster_name'] = topsites_db_value('SELECT cluster_name FROM {topsites_cluster} where clusid=%d', $clusid);
+  $item['clusid'] = $clusid;
+  $item['keywords'] = topsites_db_value('SELECT count(*) FROM {topsites_cluster_keyword} where clusid=%d', $clusid);
+  $item['keyword_traffic'] = (int) topsites_db_value('SELECT sum(monthly_searches) FROM {topsites_keyword}
+    WHERE monthly_searches>0 AND kwid IN (SELECT kwid FROM {topsites_cluster_keyword} where clusid=%d)', $clusid);
+  return $item;
+}
+ /*
+function topsites_search_details($clusid=0) {
+  // use path arg if not assigned
+  if (!$clusid) $clusid = (int) arg(4); 
+  // use first from DB if provided search does not exist
+  if (!$clusid || !topsite_search_exists($clusid)) {
+   $clusid = topsites_db_value('SELECT clusid FROM {topsites_cluster} LIMIT 1');
+   if (!$clusid) return '';
+  }
+  $summary = topsites_search_summary($clusid);
+  $output = "<h2> {$summary['cluster_name']} - {$summary['keywords']} keywords ({$summary['keyword_traffic']} total traffic) </h2>";
+  
+   // table of information about sites found in this keyword query
+   // domain, pagerank, alexa, type, #positions, #uniq_pages, keyword count, total traffic, est total coverage
+  // format table here
+  $head = array(
+		array('data' => t('Domain'), 'field' => 'site_url'),
+		array('data' => t('Pagerank'), 'field' => 'site_pagerank', 'sort' => 'desc'),
+		array('data' => t('Alexa'), 'field' => 'alexa', 'sort' => 'asc'),
+		array('data' => t('Type'), 'field' => 'type', 'sort' => 'asc'),    // platform (Drupal, Wordpress etc)   
+		array('data' => t('Pages'), 'field' => '', 'sort' => 'desc'),
+		array('data' => t('Positions'), 'field' => '', 'sort' => 'desc'),
+		array('data' => t('Keywords'), 'field' => '', 'sort' => 'desc'),
+		array('data' => t('Traffic'), 'field' => '', 'sort' => 'desc'),
+		array('data' => t('Coverage'), 'field' => '', 'sort' => 'desc'),
+  );
+  // add fields here
+  $sites = topsites_db_rows("SELECT * FROM {topsites_cluster_site} pivot, {topsites_site} site
+    WHERE pivot.sid=site.sid AND pivot.clusid=%d", $clusid);
+  // gather information here
+  $output .= theme_table($head, $sites);
+  // view details of a single site
+  return $output;
+}
+
+function topsites_site_details() {
+  // view details of a single site
+  return system_settings_form($form);   
+}
+    */
+
+ // ===============================================
+ 
+function topsites_search_keywords($clusid) {
+  $query = 'SELECT * FROM {topsites_keyword} kw, {topsites_cluster_keyword} pivot
+    WHERE kw.kwid=pivot.kwid AND pivot.clusid=%d ORDER BY monthly_searches DESC';
+  return topsites_db_rows($query, $clusid);
+}
+
+function topsite_search_exists($clusid) {
+  return (boolean) topsites_db_value('SELECT * FROM {topsites_cluster} WHERE clusid=%d', $clusid);
+}
+
+function topsite_delete_search($clusid) {
+  // exit if search does not exist
+  if (!topsite_search_exists($clusid)) return;
+  // delete search
+  db_query('DELETE FROM {topsites_cluster} WHERE clusid=%d', $clusid);
+  // get all pivots
+  $pivots = topsites_db_rows('SELECT kwid FROM {topsites_cluster_keyword} WHERE clusid=%d', $clusid);
+  // delete pivots and orphaned keywords
+  if (is_array($pivots)) foreach  ($pivots as $pivot) topsite_delete_search_kw($clusid, $pivot['kwid']);
+}
+
+function topsite_delete_search_kw($searchid, $kwid) {
+  db_query('DELETE FROM {topsites_cluster_keyword} WHERE clusid=%d AND kwid=%d', $searchid, $kwid);
+  // remove orphaned keyword if no more references in pivot table
+  
+  // Note: we're no longer removing orphans, they can be useful later
+
+  // $other_references = topsites_db_value('SELECT count(*) FROM {topsites_cluster_keyword} WHERE kwid=%d', $kwid);
+  // if (!$other_references) db_query('DELETE FROM {topsites_keyword} WHERE kwid=%d', $kwid);
+}
+
+// take block of keywords, return array of clean results or null
+function topsites_clean_keywords($keyword_text) {
+  $keyword_text = str_replace(array(",", ';', "'", '"', '[', ']'), "\n",  strtolower($keyword_text));
+  $kws = explode("\n", $keyword_text);
+  foreach ($kws as $i=>$kw) if (substr($kw,1,2)=='==') $kws[$i]='';
+    else $kws[$i] = trim(preg_replace('#[^\p{L}\p{N}]+#u', ' ', $kw));
+  foreach ($kws as $kw) if ($kw) $new[$kw]= $kw;
+  if (is_array($new)) return array_keys($new);
+  return array();
+}
+
+function topsites_clean_keyword($kw) {
+ $kw = trim(preg_replace('#[^\p{L}\p{N}]+#u', ' ', $kw));
+ return $kw;
+}
+
+// create or modify search
+function topsites_update_cluster($cluster, $kws) {
+  //drupal_set_message("Adding search: <pre>". print_r($cluster, true). "</pre>");
+  // create or update search record
+  //$cluster['clustid'] = topsites_db_value('SELECT clusid FROM {topsites_cluster} WHERE cluster_name="%s"', $cluster['cluster_name']);
+  //if (! $cluster['clustid']) unset($cluster['clustid']);
+  if ((int) $cluster['clusid']) drupal_write_record('topsites_cluster', $cluster, 'clusid');
+   else drupal_write_record('topsites_cluster', $cluster);
+
+  // add keywords to keyword table if not found
+  foreach ($kws as $id=>$kw) {
+    $kwid = topsites_db_value('SELECT kwid FROM {topsites_keyword} WHERE kw="%s"', $kw);
+    if ($kwid) {
+      $kw_list[$kwid] = $kw;
+    } else {
+      $kwrec = array('kw'=>$kw);
+      drupal_write_record('topsites_keyword', $kwrec);
+      $kwid = $kwrec['kwid'];
+      //drupal_set_message("Added keyword record: {$kwrec['kw']}={$kwid}");
+      $kw_list[$kwid] = $kw;
+      $added++;
+    }
+    $pivot_query = 'SELECT count(*) FROM {topsites_cluster_keyword} WHERE clusid=%d AND kwid=%d';
+    if (!topsites_db_value($pivot_query, $cluster['clusid'], $kwid)) {
+      $pivot = array('clusid'=>$cluster['clusid'], 'kwid'=>$kwid);
+      drupal_write_record('topsites_cluster_keyword', $pivot);
+     // drupal_set_message("Added pivot record: {$cluster['clusid']}={$kwid}");
+    } //else drupal_set_message("Found pivot matching: {$cluster['clusid']}={$kwid}");
+  }
+  $kws = $kw_list;
+  //drupal_set_message("New list of keywords for '{$cluster['cluster_name']}': <pre>".print_r($kws, true)."</pre>");
+
+  // gather up and delete all orphaned keywords and pivots
+  $pivots = topsites_db_rows('SELECT * FROM {topsites_cluster_keyword} WHERE clusid=%d', $cluster['clusid']);
+  //drupal_set_message("Pivots for '{$cluster['cluster_name']}': <pre>".print_r($pivots, true)."</pre>");
+
+  // remove items not in new kws list
+  if (is_array($pivots)) foreach ($pivots as $pivot) if (!$kws[$pivot['kwid']]) {
+    drupal_set_message("Removing {$pivot['kwid']} from search {$srch['clusid']} <pre>".print_r($pivot, TRUE)."</pre>");
+    // remove this instance
+    topsite_delete_search_kw($cluster['clusid'], $pivot['kwid']);
+    $removed++;
+  }
+  $added = (int)$added; $removed = (int)$removed;
+  drupal_set_message("Added {$added} new keywords and removed {$removed} keywords");
+}
+
+
+
+
+
+/* A version of db_query that returns all rows already
+   Because this is what you want from db_query 99% of the time anyway
+*/
+function topsites_db_rows($query) {
+  $args = func_get_args(); array_shift($args);
+  if ($result = db_query($query, $args)) {
+    while ($row = db_fetch_array($result)) $rows[] = $row;
+    return $rows;
+  }
+  return false;
+}
+function topsites_db_row($query) {
+  $args = func_get_args(); array_shift($args);
+  // drupal_set_message("Query args: ". implode(', ', $args));  return;
+  if ($result = db_query($query, $args)) return db_fetch_array($result);
+  return false;
+}
+function topsites_db_value($query) {
+  $args = func_get_args(); array_shift($args);
+  if ($result = db_result(db_query($query, $args))) return $result;
+  return NULL;
+}
+
+/*
+================= cron functions ================================
+*/
+
+
+ function topsites_cron() {
+   set_time_limit(0); 
+   // update site types
+   topsites_update_type(180);
+   // call our keyword spider routines
+   topsites_update_clusters(30);
+   //  topsites_update_pagerank(30);
+   topsites_update_traffic_est(30); 
+
+   set_time_limit(30);          
+ }
+ 
+ function topsites_update_type($max_seconds=1) {
+   // make sure we don't go more than 30 seconds
+   $starttime = strtotime('now');
+   // get a list of clusters
+   $clusters = topsites_db_rows('SELECT * FROM {topsites_cluster}');
+   foreach ($clusters as $cluster){
+     $sites = topsites_sites_in_cluster($cluster['clusid'], 'type="unknown"');
+     foreach ($sites as $site) {
+       $site = topsites_db_row('SELECT * FROM {topsites_site} WHERE sid=%d', $site['sid']);
+       if ($site['type'] == 'unknown') {
+         $site['type'] = topsites_site_type('http://'. $site['site_url']);
+         drupal_write_record('topsites_site', $site, 'sid');
+         // if ($site['type']) drupal_set_message('Site: '.$site['site_url'].' is type: '. $type);
+       }
+       if ($starttime < strtotime("{$max_seconds} seconds ago") ) return;
+     }
+   }
+ }
+ 
+ function topsites_site_type($url){
+   if (strpos($url, 'blogspot.com')) return 'blogger';
+   if (strpos($url, 'tumblr.com')) return 'tumblr';
+   if (strpos($url, 'wordpress.com')) return 'wordpress';
+   if (strpos($url, 'posterous.com')) return 'posterous';
+   if (strpos($url, 'typepad.com')) return 'typepad';
+
+   $page = topsites_search_results_fetch($url);
+   if (strpos($page, 'wp-content')) return 'wordpress';
+    else if (strpos($page, '/drupal.js')) return 'drupal';
+    else if (strpos($page, '/modules/node')) return 'drupal';
+    else if (strpos($page, 'Drupal.jsEnabled')) return 'drupal'; 
+    else if (strpos($page, 'Drupal.settings')) return 'drupal'; 
+    else if (strpos($page, 'Joomla!')) return 'joomla';
+    else if (strpos($page, "<meta content='blogger'")) return 'blogger';
+    else if (strpos($page, 'tumblr.com')) return 'tumblr';
+    else if (strpos($page, 'posterous')) return 'posterous';
+    else if (strpos($page, 'typepad.com')) return 'typepad';
+    return '';
+ }
+
+ function  topsites_search_results_fetch($url){
+    $ch=curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    curl_setopt($ch,CURLOPT_FOLLOWLOCATION,1);
+    return curl_exec($ch);
+    curl_close($ch);
+  }
+
+ function topsites_update_clusters($max_seconds=1) {
+   // make sure we don't go more than 30 seconds
+   $starttime = strtotime('now');
+   // get a list of clusters
+   $clusters = topsites_db_rows('SELECT * FROM {topsites_cluster}');
+   foreach ($clusters as $cluster){
+     // gather up all keywords which have no fresh SERPs -- AND where
+     $kws = topsites_db_rows('SELECT pivot.clusid, kw.kwid FROM {topsites_cluster_keyword} pivot, {topsites_keyword} kw
+      WHERE pivot.kwid = kw.kwid
+       AND pivot.clusid=%d
+       AND kw.kwid NOT IN (SELECT kwid FROM {topsites_serp} WHERE spider_date>%d)
+       AND kw.monthly_searches>%d
+        ORDER by kw.monthly_searches DESC
+       ', $cluster['clusid'], strtotime('30 days ago'), variable_get('topsites_minimum_keyword_traffic', 1000));
+ //drupal_set_message('Updating SERPS for '. count($kws) .' keywords in cluster #'. $cluster['clusid']);
+     if (count($kws)) foreach ($kws as $kw) {
+       topsites_spider_keyword($kw['kwid'], $cluster['clusid']);
+       if ($starttime < strtotime("{$max_seconds} seconds ago") ) return;
+     }
+   }
+ }
+ 
+ function topsites_update_pagerank($max_seconds=1) {
+   return;
+
+   // make sure we don't go more than 30 seconds
+   $starttime = strtotime('now');
+   // get a list of clusters
+   $clusters = topsites_db_rows('SELECT * FROM {topsites_cluster}');
+   // first, update all the sites
+   foreach ($clusters as $cluster){
+     // gather up all keywords which have no fresh SERPs -- AND where
+     $sites = topsites_sites_in_cluster($cluster['clusid'], 'site_pagerank<0');
+     drupal_set_message('Updating Pagerank for '. count($sites) .' sites in cluster #'. $cluster['clusid']);
+     if (count($sites)) foreach ($sites as $site) {
+       $url = 'http://'. $site['site_url'];
+       $site['site_pagerank'] = topsites_google_pagerank_check($url);
+       drupal_write_record('topsites_site', $site, 'sid');
+       if ($starttime < strtotime("{$max_seconds} seconds ago") ) return;
+     }
+   }
+   // next, update all individual pages
+   foreach ($clusters as $cluster){
+     // gather up all keywords which have no fresh SERPs -- AND where
+     $pages = topsites_pages_in_cluster($cluster['clusid'], 'pagerank<0');
+     drupal_set_message('Updating Pagerank for '. count($pages) .' pages in cluster #'. $cluster['clusid']);
+     if (count($pages)) foreach ($pages as $page) {
+       $page['pagerank'] = topsites_google_pagerank_check($page['page_url']);
+       drupal_set_message('Pagerank ('.$page['pagerank'].') found for '.$page['page_url']);
+       drupal_write_record('topsites_page', $page, 'pid');
+       if (strtotime("{$max_seconds} seconds ago") >  $starttime) return;
+     }
+   }
+ }
+
+ function topsites_update_traffic_est($max_seconds=1) {
+   // make sure we don't go more than 30 seconds
+   $starttime = strtotime('now');
+   // get a list of clusters
+   $serps = topsites_db_rows('SELECT * FROM {topsites_serp} WHERE spider_date < %d', strtotime('30 days ago'));
+   drupal_set_message("topsites_update_traffic_est updating ".count($serps) ." serps.");
+   if (count($serps)) foreach ($serps as $serp) {
+     $kw = topsites_db_row('SELECT * FROM {topsites_keyword} WHERE kwid=%d', $serp['kwid']);
+     $pages = topsites_db_rows('SELECT * FROM {topsites_serp_page} WHERE srpid=%d AND est_traffic<0', $serp['srpid']);
+     //drupal_set_message("<pre>". print_r($pages, true). "</pre>");
+     if (count($pages)) foreach ($pages as $page) {
+       $page['est_traffic'] = topsites_est_serp_traffic($page['position'], $kw['monthly_searches']);
+       drupal_write_record('topsites_serp_page', $page, 'pid');
+     }  
+     $serp['spider_date'] = strtotime('now');
+     drupal_write_record('topsites_serp', $serp, 'srpid'); // to update spider_date
+
+     if ($starttime < strtotime("{$max_seconds} seconds ago")) return;
+   }
+ }
+ 
+
+
+//
+
+/*
+================= query functions ================================
+*/
+
+function topsites_sites_in_cluster($clusid, $where='') {
+  // $keyword_traffic_min = variable_get('topsites_minimum_keyword_traffic', 1000);
+  $query = 'SELECT * FROM topsites_site WHERE '. ($where ? $where.' AND '  :'') .'sid IN (
+         SELECT sid FROM topsites_page WHERE pid IN (
+           SELECT pivot.pid FROM topsites_serp_page pivot, topsites_serp serp
+             WHERE serp.srpid = pivot.srpid AND serp.spider_date > %d AND serp.kwid IN (
+               SELECT kwid FROM topsites_cluster_keyword WHERE clusid = %d
+             )
+           )
+         )
+  ';
+  $sites = topsites_db_rows($query, strtotime('30 days ago'), $clusid);
+  return $sites;
+}
+
+
+function topsites_pages_in_cluster($clusid, $where='') {
+  $query = 'SELECT * FROM topsites_page WHERE '. ($where ? $where.' AND '  :'') .'pid IN (
+           SELECT pivot.pid FROM topsites_serp_page pivot, topsites_serp serp
+             WHERE serp.srpid = pivot.srpid AND serp.spider_date > %d AND serp.kwid IN (
+               SELECT kwid FROM topsites_cluster_keyword WHERE clusid = %d
+             )
+          )
+  ';
+  $pages = topsites_db_rows($query, strtotime('30 days ago'), $clusid);
+  return $pages;
+}
+
+
+
+/*
+================= spider functions ================================
+*/
+
+
+function topsites_spider_keyword($kwid, $clusid) {
+  // Double-check that no fresh SERP exists for this keyword
+  if (topsites_db_value('SELECT count(*) FROM {topsites_serp}
+   WHERE kwid=%d AND spider_date>%d', $kwid, strtotime('30 days ago'))) return; 
+
+  $kw = topsites_db_row('SELECT * FROM {topsites_keyword} WHERE kwid=%d', $kwid);
+  drupal_set_message("Creating new SERP for keyword: '{$kw['kw']}'"); 
+  
+  // gather up all domains and positions
+  if($urls = topsites_google_search_list($kw['kw'])) { 
+  //drupal_set_message("Returned ".count($urls)." urls");
+  
+    // create new topsites_serp entry
+    $serp = array('kwid'=>$kwid, 'spider_date'=>strtotime('now'));
+    drupal_write_record('topsites_serp', $serp);
+    
+    foreach ($urls as $pos=>$url) {
+     $url = topsites_clean_url($url);
+     // update site table topsites_site
+     $site_domain = topsites_extract_domain($url);
+     if (!($site = topsites_db_row('SELECT * FROM {topsites_site} WHERE site_domain="%s"', $site_domain))) {
+       $site = array(
+         'site_domain'=>$site_domain,
+         'site_url'=>topsites_extract_siteurl($url), 
+       );       
+       drupal_write_record('topsites_site', $site);
+     }
+     // add pivot entry in topsites_cluster_site
+     $pivot = array('clusid'=>$clusid, 'sid'=>$site['sid']);
+     drupal_write_record('topsites_cluster_site', $pivot);
+     // update page in topsites_page 
+     if (!($page = topsites_db_row('SELECT * FROM {topsites_page} WHERE page_url="%s"', $url))) {
+       $page = array(
+         'sid'=>$site['sid'],
+         'page_url'=>$url, 
+       );       
+       drupal_write_record('topsites_page', $page);
+     }
+     // add pivot entry to topsites_serp_page
+     $pivot = array('srpid'=>$serp['srpid'], 'pid'=>$page['pid'], 'position'=>$pos+1);
+     drupal_write_record('topsites_serp_page', $pivot);
+    }
+  }  
+}
+
+function topsites_google_search_list($kw) {
+  // Automatic interval to ensure that Google searches are spaced out
+  $wait_until = variable_get('topsites_last_google_search', 0) + variable_get('topsites_google_request_interval', 5);
+  if ($wait_until > strtotime('now')) {
+    // drupal_set_message('Paused spider action according to request interval.');
+    time_sleep_until ($wait_until);
+  }
+  variable_set('topsites_last_google_search', strtotime('now'));
+
+  require_once('google_tools.class.php');
+  $result = google_tools::search_results($kw);
+  // do some testing here to make sure we got what we wanted
+  return $result;
+}
+
+function topsites_google_pagerank_check($url) {
+  // Automatic interval to ensure that Google searches are spaced out
+  $wait_until = variable_get('topsites_last_pagerank_check', 0) + variable_get('topsites_google_request_interval', 5);
+  if ($wait_until > strtotime('now')) {
+    drupal_set_message('Paused spider action according to request interval.');
+    time_sleep_until ($wait_until);
+  }
+  variable_set('topsites_last_google_search', strtotime('now'));
+
+  require_once('google_tools.class.php');
+  $result = google_tools::pagerank($url);
+  // do some testing here to make sure we got what we wanted
+  return $result;
+}
+
+
+
+
+
+function topsites_clean_url($url) {
+ return $url;
+}
+function topsites_extract_domain($url) {
+  $parts = parse_url($url);
+  $domain = str_replace('www.','',$parts['host']);
+  return strtolower($domain);
+}
+function topsites_extract_siteurl($url) {
+  $parts = parse_url($url);
+  return $parts['host'];
+}
+
+
+
+
+
+
+
